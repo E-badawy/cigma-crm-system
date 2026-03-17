@@ -55,6 +55,11 @@ Environment options:
 - `DEFAULT_BUSINESS_NAME` (default: `CIGMA Main Store`)
 - `MAX_BUSINESSES` (default: `5`)
 
+## Postgres
+
+To use Postgres, set `DATABASE_URL` (Render provides this when you attach a Postgres database).
+If `DATABASE_URL` is not set, the app falls back to SQLite at `data/store_crm.db`.
+
 ## Render Deploy
 
 If you use Render, `render.yaml` is included for one-click deployment and persistent storage.

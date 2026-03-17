@@ -1,9 +1,12 @@
 import hashlib
 import io
 import os
-import sqlite3
+from typing import Any, Dict, Iterable, List, Tuple
+
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import IntegrityError
 import base64
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from uuid import uuid4
 
 import pandas as pd
@@ -46,6 +49,129 @@ PAGE_ICONS = {
     "Support Centre": "🛟",
 }
 
+_ENGINE = None
+
+
+def _normalize_sql(sql: str, params: Any) -> Tuple[str, Dict[str, Any]]:
+    if params is None:
+        return sql, {}
+    if isinstance(params, dict):
+        return sql, params
+    if isinstance(params, (list, tuple)):
+        idx = 0
+        out = []
+        for ch in sql:
+            if ch == "?":
+                idx += 1
+                out.append(f":p{idx}")
+            else:
+                out.append(ch)
+        sql_out = "".join(out)
+        param_map = {f"p{i + 1}": params[i] for i in range(idx)}
+        return sql_out, param_map
+    return sql, params
+
+
+def get_engine():
+    global _ENGINE
+    if _ENGINE is not None:
+        return _ENGINE
+    db_url = os.getenv("DATABASE_URL", "").strip()
+    if db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql://", 1)
+    if db_url:
+        _ENGINE = create_engine(db_url, pool_pre_ping=True, future=True)
+    else:
+        _ENGINE = create_engine(
+            f"sqlite:///{DB_PATH}",
+            connect_args={"check_same_thread": False},
+            future=True,
+        )
+    return _ENGINE
+
+
+def db_dialect():
+    return get_engine().dialect.name
+
+
+def _id_def():
+    return "id SERIAL PRIMARY KEY" if db_dialect() == "postgresql" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+
+
+def _get_columns(c, table: str) -> List[str]:
+    if db_dialect() == "postgresql":
+        rows = c.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name=:t
+            """,
+            {"t": table},
+        ).fetchall()
+        return [r["column_name"] for r in rows]
+    rows = c.execute(f"PRAGMA table_info({table})").fetchall()
+    return [r["name"] for r in rows]
+
+
+class DBResult:
+    def __init__(self, result, conn, is_insert: bool):
+        self._result = result
+        self._conn = conn
+        self._is_insert = is_insert
+
+    def fetchone(self):
+        row = self._result.mappings().fetchone()
+        return row
+
+    def fetchall(self):
+        return self._result.mappings().fetchall()
+
+    @property
+    def lastrowid(self):
+        lr = getattr(self._result, "lastrowid", None)
+        if lr:
+            return lr
+        if self._is_insert and db_dialect() == "postgresql":
+            try:
+                row = self._conn.execute(text("SELECT LASTVAL() AS id")).fetchone()
+                return row[0] if row else None
+            except Exception:
+                return None
+        return None
+
+
+class DBConn:
+    def __init__(self):
+        self._conn = get_engine().connect()
+        self._tx = self._conn.begin()
+
+    def execute(self, sql: str, params: Any = None):
+        sql_norm, params_norm = _normalize_sql(sql, params)
+        is_insert = sql_norm.lstrip().lower().startswith("insert")
+        result = self._conn.execute(text(sql_norm), params_norm)
+        return DBResult(result, self._conn, is_insert)
+
+    def executescript(self, script: str):
+        for stmt in script.split(";"):
+            if stmt.strip():
+                self.execute(stmt)
+
+    def commit(self):
+        if self._tx is not None:
+            self._tx.commit()
+            self._tx = self._conn.begin()
+
+    def rollback(self):
+        if self._tx is not None:
+            self._tx.rollback()
+            self._tx = self._conn.begin()
+
+    def close(self):
+        if self._tx is not None:
+            self._tx.commit()
+            self._tx = None
+        self._conn.close()
+
 
 def h(p):
     return hashlib.sha256(p.encode("utf-8")).hexdigest()
@@ -62,9 +188,7 @@ def has_manager_access(user=None):
 
 
 def conn():
-    c = sqlite3.connect(DB_PATH, check_same_thread=False)
-    c.row_factory = sqlite3.Row
-    return c
+    return DBConn()
 
 
 def get_default_business_id(c):
@@ -103,28 +227,29 @@ def require_business_id():
 
 def init_db():
     c = conn()
+    id_def = _id_def()
     c.executescript(
-        """
+        f"""
         CREATE TABLE IF NOT EXISTS businesses(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            {id_def},
             name TEXT UNIQUE NOT NULL,
             is_active INTEGER DEFAULT 1,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
         CREATE TABLE IF NOT EXISTS users(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            {id_def},
             username TEXT UNIQUE, password_hash TEXT, role TEXT,
             is_active INTEGER DEFAULT 1, last_login TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             business_id INTEGER
         );
         CREATE TABLE IF NOT EXISTS customers(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            {id_def},
             full_name TEXT NOT NULL, phone TEXT, email TEXT, address TEXT, notes TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             business_id INTEGER
         );
         CREATE TABLE IF NOT EXISTS items(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            {id_def},
             sku TEXT UNIQUE NOT NULL, name TEXT NOT NULL, category TEXT,
             unit_price REAL NOT NULL, cost_price REAL DEFAULT 0,
             stock_qty INTEGER DEFAULT 0, reorder_level INTEGER DEFAULT 5,
@@ -132,32 +257,32 @@ def init_db():
             business_id INTEGER
         );
         CREATE TABLE IF NOT EXISTS stock_movements(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            {id_def},
             item_id INTEGER NOT NULL, movement_type TEXT NOT NULL, qty INTEGER NOT NULL,
             reference TEXT, notes TEXT, created_by INTEGER, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             business_id INTEGER
         );
         CREATE TABLE IF NOT EXISTS sales(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            {id_def},
             invoice_no TEXT UNIQUE NOT NULL, customer_id INTEGER, sales_rep_id INTEGER,
             total_value REAL NOT NULL, status TEXT DEFAULT 'PAID', created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             business_id INTEGER
         );
         CREATE TABLE IF NOT EXISTS sale_items(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            {id_def},
             sale_id INTEGER NOT NULL, item_id INTEGER NOT NULL, qty INTEGER NOT NULL,
             unit_price REAL NOT NULL, line_total REAL NOT NULL,
             business_id INTEGER
         );
         CREATE TABLE IF NOT EXISTS orders(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            {id_def},
             order_no TEXT UNIQUE NOT NULL, customer_id INTEGER, description TEXT NOT NULL,
             status TEXT DEFAULT 'PENDING', due_date TEXT, total_value REAL DEFAULT 0,
             created_by INTEGER, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             business_id INTEGER
         );
         CREATE TABLE IF NOT EXISTS order_items(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            {id_def},
             order_id INTEGER NOT NULL,
             item_id INTEGER,
             item_name TEXT NOT NULL,
@@ -171,7 +296,7 @@ def init_db():
             FOREIGN KEY(order_id) REFERENCES orders(id)
         );
         CREATE TABLE IF NOT EXISTS activity_logs(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            {id_def},
             user_id INTEGER, action TEXT NOT NULL, entity_type TEXT, entity_id INTEGER,
             details TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             business_id INTEGER
@@ -201,7 +326,7 @@ def init_db():
                 "UPDATE users SET username='manager', role='manager', password_hash=?, is_active=1 WHERE id=?",
                 (new_hash, int(legacy_admin_user["id"])),
             )
-        except sqlite3.IntegrityError:
+        except IntegrityError:
             c.execute(
                 "INSERT INTO users(username,password_hash,role,is_active,business_id) VALUES(?,?,?,?,?)",
                 ("manager", h("manager123"), "manager", 1, default_business_id),
@@ -217,14 +342,14 @@ def init_db():
             "INSERT INTO users(username,password_hash,role,is_active,business_id) VALUES(?,?,?,?,?)",
             ("sales", h("sales123"), "sales", 1, default_business_id),
         )
-    cols = [r["name"] for r in c.execute("PRAGMA table_info(users)").fetchall()]
+    cols = _get_columns(c, "users")
     if "photo_path" not in cols:
         c.execute("ALTER TABLE users ADD COLUMN photo_path TEXT")
     if "business_id" not in cols:
         c.execute("ALTER TABLE users ADD COLUMN business_id INTEGER")
         c.execute("UPDATE users SET business_id=? WHERE business_id IS NULL", (default_business_id,))
 
-    items_cols = [r["name"] for r in c.execute("PRAGMA table_info(items)").fetchall()]
+    items_cols = _get_columns(c, "items")
     items_migrations = {
         "description": "TEXT",
         "color": "TEXT",
@@ -237,7 +362,7 @@ def init_db():
         if col not in items_cols:
             c.execute(f"ALTER TABLE items ADD COLUMN {col} {definition}")
 
-    customers_cols = [r["name"] for r in c.execute("PRAGMA table_info(customers)").fetchall()]
+    customers_cols = _get_columns(c, "customers")
     customers_migrations = {
         "hand_length": "REAL",
         "neck_width": "REAL",
@@ -257,7 +382,7 @@ def init_db():
         if col not in customers_cols:
             c.execute(f"ALTER TABLE customers ADD COLUMN {col} {definition}")
 
-    sales_cols = [r["name"] for r in c.execute("PRAGMA table_info(sales)").fetchall()]
+    sales_cols = _get_columns(c, "sales")
     sales_migrations = {
         "subtotal": "REAL DEFAULT 0",
         "discount_total": "REAL DEFAULT 0",
@@ -276,7 +401,7 @@ def init_db():
         if col not in sales_cols:
             c.execute(f"ALTER TABLE sales ADD COLUMN {col} {definition}")
 
-    sale_items_cols = [r["name"] for r in c.execute("PRAGMA table_info(sale_items)").fetchall()]
+    sale_items_cols = _get_columns(c, "sale_items")
     sale_items_migrations = {
         "sku": "TEXT",
         "item_name": "TEXT",
@@ -293,7 +418,7 @@ def init_db():
         if col not in sale_items_cols:
             c.execute(f"ALTER TABLE sale_items ADD COLUMN {col} {definition}")
 
-    orders_cols = [r["name"] for r in c.execute("PRAGMA table_info(orders)").fetchall()]
+    orders_cols = _get_columns(c, "orders")
     orders_migrations = {
         "order_type": "TEXT DEFAULT 'DRESS_TO_BE_MADE'",
         "priority": "TEXT DEFAULT 'MEDIUM'",
@@ -311,17 +436,17 @@ def init_db():
         if col not in orders_cols:
             c.execute(f"ALTER TABLE orders ADD COLUMN {col} {definition}")
 
-    order_items_cols = [r["name"] for r in c.execute("PRAGMA table_info(order_items)").fetchall()]
+    order_items_cols = _get_columns(c, "order_items")
     if "business_id" not in order_items_cols:
         c.execute("ALTER TABLE order_items ADD COLUMN business_id INTEGER")
         c.execute("UPDATE order_items SET business_id=? WHERE business_id IS NULL", (default_business_id,))
 
-    stock_cols = [r["name"] for r in c.execute("PRAGMA table_info(stock_movements)").fetchall()]
+    stock_cols = _get_columns(c, "stock_movements")
     if "business_id" not in stock_cols:
         c.execute("ALTER TABLE stock_movements ADD COLUMN business_id INTEGER")
         c.execute("UPDATE stock_movements SET business_id=? WHERE business_id IS NULL", (default_business_id,))
 
-    logs_cols = [r["name"] for r in c.execute("PRAGMA table_info(activity_logs)").fetchall()]
+    logs_cols = _get_columns(c, "activity_logs")
     if "business_id" not in logs_cols:
         c.execute("ALTER TABLE activity_logs ADD COLUMN business_id INTEGER")
         c.execute("UPDATE activity_logs SET business_id=? WHERE business_id IS NULL", (default_business_id,))
@@ -343,10 +468,9 @@ def log(action, entity="", entity_id=None, details=""):
 
 
 def df(sql, params=()):
-    c = conn()
-    out = pd.read_sql_query(sql, c, params=params)
-    c.close()
-    return out
+    sql_norm, params_norm = _normalize_sql(sql, params)
+    with get_engine().connect() as c:
+        return pd.read_sql_query(text(sql_norm), c, params=params_norm)
 
 
 def calc_line(qty, unit_price, discount_pct, tax_pct):
@@ -1621,7 +1745,7 @@ def page_user_management():
                     )
                     st.success("User account created.")
                     st.rerun()
-                except sqlite3.IntegrityError:
+                except IntegrityError:
                     c.close()
                     st.error("Username already exists.")
 
@@ -1656,7 +1780,7 @@ def page_user_management():
                     log("CREATE_BUSINESS", "businesses", None, f"Created business {new_business_name.strip()}")
                     st.success(f"Business created: {new_business_name.strip()}")
                     st.rerun()
-                except sqlite3.IntegrityError:
+                except IntegrityError:
                     c.close()
                     st.warning("Business name already exists.")
 
@@ -1786,7 +1910,7 @@ def login_view():
                         c.execute("UPDATE users SET username='manager', role='manager' WHERE id=?", (int(legacy["id"]),))
                         c.commit()
                         r = c.execute("SELECT * FROM users WHERE id=?", (int(legacy["id"]),)).fetchone()
-                    except sqlite3.IntegrityError:
+                    except IntegrityError:
                         r = legacy
             if r and r["password_hash"] == h(p):
                 default_business_id = get_default_business_id(c)
@@ -1836,6 +1960,11 @@ def render_kpi_card(title, value, note="", kind=""):
 
 def page_home(user, pages):
     bid = require_business_id()
+    today = date.today()
+    today_start = f"{today.isoformat()} 00:00:00"
+    tomorrow_start = f"{(today + timedelta(days=1)).isoformat()} 00:00:00"
+    trend_start = f"{(today - timedelta(days=14)).isoformat()} 00:00:00"
+    today_str = today.isoformat()
     today_label = datetime.now().strftime("%A, %B %d, %Y")
     st.markdown(
         f"""
@@ -1854,14 +1983,14 @@ def page_home(user, pages):
             (SELECT COUNT(*) FROM customers WHERE business_id=:biz_id) customers,
             (SELECT COUNT(*) FROM sales WHERE business_id=:biz_id) sales,
             (SELECT COUNT(*) FROM orders WHERE business_id=:biz_id) orders,
-            (SELECT COALESCE(SUM(total_value),0) FROM sales WHERE business_id=:biz_id AND date(created_at)=date('now')) today_sales,
-            (SELECT COUNT(*) FROM orders WHERE business_id=:biz_id AND date(created_at)=date('now')) today_orders,
+            (SELECT COALESCE(SUM(total_value),0) FROM sales WHERE business_id=:biz_id AND created_at>=:today_start AND created_at<:tomorrow_start) today_sales,
+            (SELECT COUNT(*) FROM orders WHERE business_id=:biz_id AND created_at>=:today_start AND created_at<:tomorrow_start) today_orders,
             (SELECT COUNT(*) FROM items WHERE business_id=:biz_id AND is_active=1 AND stock_qty<=reorder_level) low_stock,
             (SELECT COUNT(*) FROM items WHERE business_id=:biz_id AND is_active=1 AND stock_qty<=0) sold_out,
             (SELECT COUNT(*) FROM orders WHERE business_id=:biz_id AND status IN ('PENDING','IN_PROGRESS')) open_orders,
-            (SELECT COUNT(*) FROM orders WHERE business_id=:biz_id AND due_date IS NOT NULL AND date(due_date)<date('now') AND status NOT IN ('COMPLETED','CANCELLED')) overdue_orders
+            (SELECT COUNT(*) FROM orders WHERE business_id=:biz_id AND due_date IS NOT NULL AND due_date<:today_str AND status NOT IN ('COMPLETED','CANCELLED')) overdue_orders
         """,
-        {"biz_id": bid},
+        {"biz_id": bid, "today_start": today_start, "tomorrow_start": tomorrow_start, "today_str": today_str},
     ).iloc[0]
 
     row1 = st.columns(4)
@@ -1898,13 +2027,13 @@ def page_home(user, pages):
         st.markdown("#### Sales Trend (Last 14 Days)")
         trend = df(
             """
-            SELECT date(created_at) day, COALESCE(SUM(total_value),0) value
+            SELECT DATE(created_at) day, COALESCE(SUM(total_value),0) value
             FROM sales
-            WHERE business_id=:biz_id AND date(created_at) >= date('now','-14 day')
-            GROUP BY date(created_at)
+            WHERE business_id=:biz_id AND created_at>=:trend_start
+            GROUP BY DATE(created_at)
             ORDER BY day
             """,
-            {"biz_id": bid},
+            {"biz_id": bid, "trend_start": trend_start},
         )
         if trend.empty:
             st.info("No sales trend available yet.")
@@ -1930,12 +2059,12 @@ def page_home(user, pages):
             SELECT order_no, due_date, status, total_value
             FROM orders
             WHERE business_id=:biz_id AND due_date IS NOT NULL
-              AND date(due_date)<date('now')
+              AND due_date<:today_str
               AND status NOT IN ('COMPLETED','CANCELLED')
             ORDER BY due_date ASC
             LIMIT 8
             """,
-            {"biz_id": bid},
+            {"biz_id": bid, "today_str": today_str},
         )
         st.caption("Low stock items")
         if low_df.empty:
@@ -1968,6 +2097,7 @@ def page_home(user, pages):
 
 def page_dashboard():
     bid = require_business_id()
+    active_since = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
     st.header("📊 Dashboard")
     user = st.session_state.get("user", {"username": "User", "role": "sales"})
     c_left, c_right = st.columns([4, 1.3])
@@ -1994,9 +2124,9 @@ def page_dashboard():
             (SELECT COUNT(*) FROM stock_movements WHERE business_id=:biz_id) inventory_moves,
             (SELECT COALESCE(SUM(total_value),0) FROM sales WHERE business_id=:biz_id) sales_value,
             (SELECT COUNT(*) FROM orders WHERE business_id=:biz_id) orders_count,
-            (SELECT COUNT(*) FROM users WHERE business_id=:biz_id AND role='sales' AND last_login>=datetime('now','-30 day')) active_sales
+            (SELECT COUNT(*) FROM users WHERE business_id=:biz_id AND role='sales' AND last_login>=:active_since) active_sales
         """,
-        {"biz_id": bid},
+        {"biz_id": bid, "active_since": active_since},
     ).iloc[0]
     with c_left:
         c1, c2, c3, c4 = st.columns(4)
@@ -2025,7 +2155,7 @@ def page_dashboard():
         st.plotly_chart(px.bar(f, x="item", y="qty", color="qty", title="Item Sales Frequency"), use_container_width=True)
     with right:
         t = df(
-            "SELECT date(created_at) day, COALESCE(SUM(total_value),0) value FROM sales WHERE business_id=:biz_id GROUP BY date(created_at) ORDER BY day",
+            "SELECT DATE(created_at) day, COALESCE(SUM(total_value),0) value FROM sales WHERE business_id=:biz_id GROUP BY DATE(created_at) ORDER BY day",
             {"biz_id": bid},
         )
         if t.empty:
@@ -2282,7 +2412,7 @@ def page_items():
                 c.commit()
                 log("CREATE_ITEM", "items", cur.lastrowid, f"{name.strip()} [{sku.strip()}]")
                 st.success("Item saved.")
-            except sqlite3.IntegrityError:
+            except IntegrityError:
                 st.error("SKU already exists.")
             c.close()
 
@@ -3724,6 +3854,10 @@ def page_reports():
     if d1 > d2:
         st.error("From date must be before To date.")
         return
+    start_dt = datetime.combine(d1, datetime.min.time())
+    end_dt = datetime.combine(d2 + timedelta(days=1), datetime.min.time())
+    start_str = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+    end_str = end_dt.strftime("%Y-%m-%d %H:%M:%S")
 
     sales_raw = df(
         """
@@ -3744,10 +3878,10 @@ def page_reports():
         FROM sales s
         LEFT JOIN customers c ON c.id=s.customer_id
         LEFT JOIN users u ON u.id=s.sales_rep_id
-        WHERE s.business_id=:biz_id AND date(s.created_at) BETWEEN date(:d1) AND date(:d2)
+        WHERE s.business_id=:biz_id AND s.created_at>=:start_str AND s.created_at<:end_str
         ORDER BY s.id DESC
         """,
-        {"biz_id": bid, "d1": d1.isoformat(), "d2": d2.isoformat()},
+        {"biz_id": bid, "start_str": start_str, "end_str": end_str},
     )
     orders_raw = df(
         """
@@ -3767,10 +3901,10 @@ def page_reports():
         FROM orders o
         LEFT JOIN customers c ON c.id=o.customer_id
         LEFT JOIN users u ON u.id=o.assigned_to
-        WHERE o.business_id=:biz_id AND date(o.created_at) BETWEEN date(:d1) AND date(:d2)
+        WHERE o.business_id=:biz_id AND o.created_at>=:start_str AND o.created_at<:end_str
         ORDER BY o.id DESC
         """,
-        {"biz_id": bid, "d1": d1.isoformat(), "d2": d2.isoformat()},
+        {"biz_id": bid, "start_str": start_str, "end_str": end_str},
     )
 
     sales_statuses = sorted(sales_raw["payment_status"].dropna().astype(str).unique().tolist()) if not sales_raw.empty else []
