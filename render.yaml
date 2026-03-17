@@ -12,10 +12,6 @@ services:
       - key: MAX_BUSINESSES
         value: "5"
       - key: DATA_DIR
-        value: /var/data
+        value: /tmp/cigma-data
       - key: UPLOAD_DIR
-        value: /var/data/uploads
-    disk:
-      name: cigma-crm-data
-      mountPath: /var/data
-      sizeGB: 1
+        value: /tmp/cigma-data/uploads
