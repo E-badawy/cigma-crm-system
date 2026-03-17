@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: cigma-crm-system
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
+    envVars:
+      - key: APP_ENV
+        value: Render
+      - key: DEFAULT_BUSINESS_NAME
+        value: CIGMA Main Store
+      - key: MAX_BUSINESSES
+        value: "5"
+      - key: DATA_DIR
+        value: /var/data
+      - key: UPLOAD_DIR
+        value: /var/data/uploads
+    disk:
+      name: cigma-crm-data
+      mountPath: /var/data
+      sizeGB: 1
