@@ -3,4 +3,4 @@ pandas==2.2.3
 plotly==5.24.1
 reportlab==4.2.5
 SQLAlchemy==2.0.36
-psycopg2-binary==2.9.9
+pg8000==1.30.5

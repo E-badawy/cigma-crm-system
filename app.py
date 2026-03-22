@@ -81,6 +81,8 @@ def get_engine():
     if db_url.startswith("postgres://"):
         db_url = db_url.replace("postgres://", "postgresql://", 1)
     if db_url:
+        if db_url.startswith("postgresql://"):
+            db_url = db_url.replace("postgresql://", "postgresql+pg8000://", 1)
         _ENGINE = create_engine(db_url, pool_pre_ping=True, future=True)
     else:
         _ENGINE = create_engine(

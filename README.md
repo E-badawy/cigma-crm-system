@@ -59,6 +59,7 @@ Environment options:
 
 To use Postgres, set `DATABASE_URL` (Render provides this when you attach a Postgres database).
 If `DATABASE_URL` is not set, the app falls back to SQLite at `data/store_crm.db`.
+This project uses the pure-Python `pg8000` driver for compatibility across Python versions.
 
 ## Render Deploy
 
