@@ -198,7 +198,15 @@ def get_default_business_id(c):
     row = c.execute("SELECT id FROM businesses ORDER BY id ASC LIMIT 1").fetchone()
     if row:
         return int(row["id"])
-    c.execute("INSERT INTO businesses(name) VALUES(?)", (DEFAULT_BUSINESS_NAME,))
+    if db_dialect() == "postgresql":
+        row = c.execute(
+            "INSERT INTO businesses(name) VALUES(:name) RETURNING id",
+            {"name": DEFAULT_BUSINESS_NAME},
+        ).fetchone()
+        return int(row["id"])
+    cur = c.execute("INSERT INTO businesses(name) VALUES(?)", (DEFAULT_BUSINESS_NAME,))
+    if cur.lastrowid:
+        return int(cur.lastrowid)
     return int(c.execute("SELECT last_insert_rowid() id").fetchone()["id"])
 
 
