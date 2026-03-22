@@ -2879,7 +2879,7 @@ def page_sales():
         st.session_state.sales_cart = []
 
     items = df(
-        "SELECT id,sku,name,unit_price,stock_qty FROM items WHERE business_id=:biz_id AND is_active=1 ORDER BY name",
+        "SELECT id,sku,name,unit_price,stock_qty,image_path FROM items WHERE business_id=:biz_id AND is_active=1 ORDER BY name",
         {"biz_id": bid},
     )
     customers = df("SELECT id,full_name FROM customers WHERE business_id=:biz_id ORDER BY full_name", {"biz_id": bid})
@@ -2890,10 +2890,23 @@ def page_sales():
         return
 
     with st.expander("Add Item To Cart", expanded=True):
-        labels = [f"{r.sku} - {r.name} (stock: {r.stock_qty})" for _, r in items.iterrows()]
+        labels = [f"{r.name} (SKU: {r.sku}) · stock: {r.stock_qty}" for _, r in items.iterrows()]
         idx = st.selectbox("Item", range(len(labels)), format_func=lambda x: labels[x], key="sale_item_pick")
         selected = items.iloc[idx]
         available_qty = int(selected["stock_qty"])
+        preview = item_image_data_uri(selected.get("image_path"), selected.get("name"))
+        st.markdown(
+            f"""
+            <div style="display:flex;gap:12px;align-items:center;margin:0.2rem 0 0.6rem 0;">
+                <img src="{preview}" style="width:72px;height:72px;object-fit:cover;border-radius:10px;border:1px solid #d8b562;" />
+                <div>
+                    <div style="font-weight:700;color:#3b2100;">{selected.get('name')}</div>
+                    <div style="font-size:0.85rem;color:#6d5a2f;">SKU: {selected.get('sku')}</div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
         c1, c2, c3, c4 = st.columns(4)
         with c1:
@@ -2944,8 +2957,8 @@ def page_sales():
     if cart:
         cart_df = pd.DataFrame(cart)[
             [
-                "sku",
                 "item_name",
+                "sku",
                 "qty",
                 "unit_price",
                 "discount_pct",
@@ -2955,12 +2968,12 @@ def page_sales():
                 "line_tax",
                 "line_total",
             ]
-        ]
+        ].rename(columns={"item_name": "Item", "sku": "SKU"})
         st.dataframe(cart_df, use_container_width=True, hide_index=True)
 
         a1, a2 = st.columns([2, 1])
         with a1:
-            remove_labels = [f"{x['sku']} - {x['item_name']}" for x in cart]
+            remove_labels = [f"{x['item_name']} (SKU: {x['sku']})" for x in cart]
             remove_pick = st.selectbox("Remove line", range(len(remove_labels)), format_func=lambda i: remove_labels[i], key="sale_remove_pick")
         with a2:
             st.write("")
@@ -3163,7 +3176,7 @@ def page_orders():
         {"biz_id": bid},
     )
     items_df = df(
-        "SELECT id, sku, name, unit_price FROM items WHERE business_id=:biz_id AND is_active=1 ORDER BY name",
+        "SELECT id, sku, name, unit_price, image_path FROM items WHERE business_id=:biz_id AND is_active=1 ORDER BY name",
         {"biz_id": bid},
     )
 
@@ -3178,13 +3191,26 @@ def page_orders():
         with st.expander("Order Line Items", expanded=True):
             line_source = st.radio("Line Source", ["Catalog Item", "Custom Item"], horizontal=True, key="order_line_source")
             if line_source == "Catalog Item" and not items_df.empty:
-                item_labels = [f"{r['sku']} - {r['name']}" for _, r in items_df.iterrows()]
+                item_labels = [f"{r['name']} (SKU: {r['sku']})" for _, r in items_df.iterrows()]
                 idx = st.selectbox("Catalog Item", range(len(item_labels)), format_func=lambda i: item_labels[i], key="order_line_catalog_pick")
                 selected_item = items_df.iloc[idx]
                 default_name = str(selected_item["name"])
                 default_sku = str(selected_item["sku"])
                 default_price = float(selected_item["unit_price"])
                 selected_item_id = int(selected_item["id"])
+                preview = item_image_data_uri(selected_item.get("image_path"), selected_item.get("name"))
+                st.markdown(
+                    f"""
+                    <div style="display:flex;gap:12px;align-items:center;margin:0.2rem 0 0.6rem 0;">
+                        <img src="{preview}" style="width:72px;height:72px;object-fit:cover;border-radius:10px;border:1px solid #d8b562;" />
+                        <div>
+                            <div style="font-weight:700;color:#3b2100;">{selected_item.get('name')}</div>
+                            <div style="font-size:0.85rem;color:#6d5a2f;">SKU: {selected_item.get('sku')}</div>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
             else:
                 default_name = ""
                 default_sku = ""
@@ -3532,7 +3558,7 @@ def page_orders():
                 st.dataframe(line_df, use_container_width=True, hide_index=True)
 
             with st.expander("Edit Order Lines", expanded=False):
-                source_labels = [f"{r['sku']} - {r['name']}" for _, r in items_df.iterrows()] if not items_df.empty else []
+                source_labels = [f"{r['name']} (SKU: {r['sku']})" for _, r in items_df.iterrows()] if not items_df.empty else []
                 source_idx = st.selectbox("Catalog item", range(len(source_labels)) if source_labels else [0], format_func=(lambda i: source_labels[i]) if source_labels else (lambda i: "No catalog items"), key=f"upd_order_line_catalog_{row['id']}")
                 if source_labels:
                     selected_cat = items_df.iloc[source_idx]
