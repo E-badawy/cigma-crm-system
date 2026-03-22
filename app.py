@@ -184,6 +184,10 @@ def page_label(page_name):
     return f"{PAGE_ICONS.get(page_name, '📄')} {page_name}"
 
 
+def is_lite_mode():
+    return bool(st.session_state.get("lite_mode", False))
+
+
 def has_manager_access(user=None):
     actor = user if user is not None else st.session_state.get("user", {})
     role = str((actor or {}).get("role", "")).strip().lower()
@@ -1150,6 +1154,19 @@ def inject_styles(authenticated):
             color: #5a3600;
             font-size: 0.95rem;
         }}
+        .side-nav-current {{
+            background: #ffcc66;
+            border: 1px solid #8f6200;
+            border-radius: 8px;
+            padding: 0.5rem 0.75rem;
+            margin: 0.25rem 0 0.35rem 0;
+            color: #3b2100;
+            font-weight: 700;
+            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
+        }}
+        .side-nav-current span {{
+            font-weight: 800;
+        }}
         [data-testid="stSidebar"] {{
             background: linear-gradient(180deg, #b8860b 0%, #d4a017 48%, #f1c75c 100%);
             border-right: 1px solid #8f6200;
@@ -1447,17 +1464,10 @@ def render_top_navigation(pages):
     if not pages:
         return
     current_index = pages.index(current) if current in pages else 0
-    labels = [page_label(p) for p in pages]
-    c1, c2, c3 = st.columns([2.2, 2.2, 1.6])
+    c1, c2 = st.columns([3, 1.4])
     with c1:
         st.markdown(f"<div class='top-nav-current'>Current Page: <b>{page_label(current)}</b></div>", unsafe_allow_html=True)
     with c2:
-        selected_label = st.selectbox("Quick Jump", labels, index=current_index)
-        selected_page = pages[labels.index(selected_label)]
-        if selected_page != current:
-            st.session_state.page = selected_page
-            st.rerun()
-    with c3:
         p1, p2 = st.columns(2)
         with p1:
             if st.button("◀ Prev", use_container_width=True, disabled=current_index == 0, key=f"top_nav_prev_{current_index}"):
@@ -1971,8 +1981,15 @@ def auto_collapse_sidebar_on_mobile():
             const width = window.innerWidth || 1024;
             if (width > 860) return;
             const doc = window.parent.document;
-            const btn = doc.querySelector('button[data-testid="stSidebarCollapseButton"]');
-            if (btn) { btn.click(); }
+            const tryClick = () => {
+              const btn = doc.querySelector('button[data-testid="stSidebarCollapseButton"]');
+              if (!btn) return;
+              const expanded = btn.getAttribute("aria-expanded");
+              if (expanded !== "false") { btn.click(); }
+            };
+            setTimeout(tryClick, 50);
+            setTimeout(tryClick, 250);
+            setTimeout(tryClick, 700);
           } catch (e) {}
         })();
         </script>
@@ -2049,22 +2066,25 @@ def page_home(user, pages):
     left, right = st.columns([1.4, 1])
     with left:
         st.markdown("#### Sales Trend (Last 14 Days)")
-        trend = df(
-            """
-            SELECT DATE(created_at) AS day_label, COALESCE(SUM(total_value),0) value
-            FROM sales
-            WHERE business_id=:biz_id AND created_at>=:trend_start
-            GROUP BY DATE(created_at)
-            ORDER BY day_label
-            """,
-            {"biz_id": bid, "trend_start": trend_start},
-        )
-        if trend.empty:
-            st.info("No sales trend available yet.")
+        if is_lite_mode():
+            st.info("Lite mode is on. Turn it off to view the sales trend chart.")
         else:
-            fig = px.area(trend, x="day", y="value", title="Daily Sales Value", markers=True)
-            fig.update_layout(margin=dict(l=8, r=8, t=36, b=8))
-            st.plotly_chart(fig, use_container_width=True)
+            trend = df(
+                """
+                SELECT DATE(created_at) AS day_label, COALESCE(SUM(total_value),0) value
+                FROM sales
+                WHERE business_id=:biz_id AND created_at>=:trend_start
+                GROUP BY DATE(created_at)
+                ORDER BY day_label
+                """,
+                {"biz_id": bid, "trend_start": trend_start},
+            )
+            if trend.empty:
+                st.info("No sales trend available yet.")
+            else:
+                fig = px.area(trend, x="day", y="value", title="Daily Sales Value", markers=True)
+                fig.update_layout(margin=dict(l=8, r=8, t=36, b=8))
+                st.plotly_chart(fig, use_container_width=True)
 
     with right:
         st.markdown("#### Operational Alerts")
@@ -2164,28 +2184,34 @@ def page_dashboard():
         c7.metric("Active Sales Reps", int(k["active_sales"]))
     left, right = st.columns(2)
     with left:
-        f = df(
-            """
-            SELECT i.name item, COALESCE(SUM(si.qty),0) qty
-            FROM items i
-            LEFT JOIN sale_items si ON si.item_id=i.id AND si.business_id=:biz_id
-            WHERE i.business_id=:biz_id
-            GROUP BY i.id
-            ORDER BY qty DESC
-            LIMIT 12
-            """,
-            {"biz_id": bid},
-        )
-        st.plotly_chart(px.bar(f, x="item", y="qty", color="qty", title="Item Sales Frequency"), use_container_width=True)
-    with right:
-        t = df(
-            "SELECT DATE(created_at) AS day_label, COALESCE(SUM(total_value),0) value FROM sales WHERE business_id=:biz_id GROUP BY DATE(created_at) ORDER BY day_label",
-            {"biz_id": bid},
-        )
-        if t.empty:
-            st.info("No sales yet.")
+        if is_lite_mode():
+            st.info("Lite mode is on. Turn it off to view sales charts.")
         else:
-            st.plotly_chart(px.line(t, x="day", y="value", markers=True, title="Sales Trend"), use_container_width=True)
+            f = df(
+                """
+                SELECT i.name item, COALESCE(SUM(si.qty),0) qty
+                FROM items i
+                LEFT JOIN sale_items si ON si.item_id=i.id AND si.business_id=:biz_id
+                WHERE i.business_id=:biz_id
+                GROUP BY i.id
+                ORDER BY qty DESC
+                LIMIT 12
+                """,
+                {"biz_id": bid},
+            )
+            st.plotly_chart(px.bar(f, x="item", y="qty", color="qty", title="Item Sales Frequency"), use_container_width=True)
+    with right:
+        if is_lite_mode():
+            st.info("Lite mode is on. Turn it off to view sales trends.")
+        else:
+            t = df(
+                "SELECT DATE(created_at) AS day_label, COALESCE(SUM(total_value),0) value FROM sales WHERE business_id=:biz_id GROUP BY DATE(created_at) ORDER BY day_label",
+                {"biz_id": bid},
+            )
+            if t.empty:
+                st.info("No sales yet.")
+            else:
+                st.plotly_chart(px.line(t, x="day", y="value", markers=True, title="Sales Trend"), use_container_width=True)
 
 
 def page_items():
@@ -3990,6 +4016,8 @@ def page_reports():
             st.markdown("#### Revenue Trend")
             if sales.empty:
                 st.info("No sales data for selected filters.")
+            elif is_lite_mode():
+                st.info("Lite mode is on. Turn it off to view revenue charts.")
             else:
                 sales_trend = sales.copy()
                 sales_trend["day"] = pd.to_datetime(sales_trend["created_at"], errors="coerce").dt.date
@@ -3999,6 +4027,8 @@ def page_reports():
             st.markdown("#### Orders Trend")
             if orders.empty:
                 st.info("No orders data for selected filters.")
+            elif is_lite_mode():
+                st.info("Lite mode is on. Turn it off to view orders charts.")
             else:
                 order_trend = orders.copy()
                 order_trend["day"] = pd.to_datetime(order_trend["created_at"], errors="coerce").dt.date
@@ -4011,6 +4041,8 @@ def page_reports():
             st.markdown("#### Top Customers by Revenue")
             if sales.empty:
                 st.info("No sales data.")
+            elif is_lite_mode():
+                st.info("Lite mode is on. Turn it off to view top customer charts.")
             else:
                 top_customers = sales.groupby("customer", as_index=False)["grand_total"].sum().sort_values("grand_total", ascending=False).head(10)
                 st.plotly_chart(px.bar(top_customers, x="customer", y="grand_total", color="grand_total"), use_container_width=True)
@@ -4018,12 +4050,17 @@ def page_reports():
             st.markdown("#### Top Sales Reps")
             if sales.empty:
                 st.info("No sales data.")
+            elif is_lite_mode():
+                st.info("Lite mode is on. Turn it off to view top reps charts.")
             else:
                 top_reps = sales.groupby("sales_rep", as_index=False)["grand_total"].sum().sort_values("grand_total", ascending=False).head(10)
                 st.plotly_chart(px.bar(top_reps, x="sales_rep", y="grand_total", color="grand_total"), use_container_width=True)
 
         st.markdown("#### Sales Register")
-        st.dataframe(sales, use_container_width=True, hide_index=True)
+        display_sales = sales.head(200) if is_lite_mode() else sales
+        if is_lite_mode() and len(sales) > len(display_sales):
+            st.caption("Lite mode: showing first 200 rows.")
+        st.dataframe(display_sales, use_container_width=True, hide_index=True)
 
     with tab_orders:
         o_left, o_right = st.columns(2)
@@ -4031,6 +4068,8 @@ def page_reports():
             st.markdown("#### Orders by Status")
             if orders.empty:
                 st.info("No orders data.")
+            elif is_lite_mode():
+                st.info("Lite mode is on. Turn it off to view order status charts.")
             else:
                 status_df = orders.groupby("status", as_index=False)["id"].count().rename(columns={"id": "count"})
                 st.plotly_chart(px.pie(status_df, names="status", values="count"), use_container_width=True)
@@ -4038,12 +4077,17 @@ def page_reports():
             st.markdown("#### Orders by Priority")
             if orders.empty:
                 st.info("No orders data.")
+            elif is_lite_mode():
+                st.info("Lite mode is on. Turn it off to view order priority charts.")
             else:
                 pr_df = orders.groupby("priority", as_index=False)["id"].count().rename(columns={"id": "count"})
                 st.plotly_chart(px.bar(pr_df, x="priority", y="count", color="count"), use_container_width=True)
 
         st.markdown("#### Orders Register")
-        st.dataframe(orders, use_container_width=True, hide_index=True)
+        display_orders = orders.head(200) if is_lite_mode() else orders
+        if is_lite_mode() and len(orders) > len(display_orders):
+            st.caption("Lite mode: showing first 200 rows.")
+        st.dataframe(display_orders, use_container_width=True, hide_index=True)
 
     with tab_exports:
         st.markdown("#### Download Data")
@@ -4168,19 +4212,36 @@ def main():
                     except ValueError as ex:
                         st.error(str(ex))
         st.markdown("### 🧭 Navigation")
+        st.toggle("Lite mode (faster on mobile)", value=st.session_state.get("lite_mode", False), key="lite_mode")
+        st.caption("Lite mode hides heavy charts and trims large tables.")
+        nav_labels = [page_label(p) for p in pages]
+        selected_label = st.selectbox(
+            "Navigation",
+            nav_labels,
+            index=pages.index(st.session_state.page),
+            key="side_nav_dropdown",
+        )
+        selected_page = pages[nav_labels.index(selected_label)]
+        if selected_page != st.session_state.page:
+            st.session_state.page = selected_page
+            st.rerun()
         nav_pages = [p for p in pages if p != "Support Centre"]
         for p in nav_pages:
             p_label = page_label(p)
-            label = f"▶ {p_label}" if p == st.session_state.page else p_label
-            if st.button(label, key=f"side_nav_{p}", use_container_width=True):
-                st.session_state.page = p
-                st.rerun()
+            if p == st.session_state.page:
+                st.markdown(f"<div class=\"side-nav-current\">{p_label}</div>", unsafe_allow_html=True)
+            else:
+                if st.button(p_label, key=f"side_nav_{p}", use_container_width=True):
+                    st.session_state.page = p
+                    st.rerun()
         if "Support Centre" in pages:
             support_label = page_label("Support Centre")
-            support_button_label = f"▶ {support_label}" if st.session_state.page == "Support Centre" else support_label
-            if st.button(support_button_label, key="side_nav_support_centre", use_container_width=True):
-                st.session_state.page = "Support Centre"
-                st.rerun()
+            if st.session_state.page == "Support Centre":
+                st.markdown(f"<div class=\"side-nav-current\">{support_label}</div>", unsafe_allow_html=True)
+            else:
+                if st.button(support_label, key="side_nav_support_centre", use_container_width=True):
+                    st.session_state.page = "Support Centre"
+                    st.rerun()
         st.divider()
         if st.button("Log out", key="side_logout", use_container_width=True):
             log("LOGOUT", "users", u["id"], "User logout")
