@@ -1447,16 +1447,16 @@ def render_top_navigation(pages):
     if not pages:
         return
     current_index = pages.index(current) if current in pages else 0
-    c1, c2, c3 = st.columns([1.05, 3.0, 1.5])
+    labels = [page_label(p) for p in pages]
+    c1, c2, c3 = st.columns([2.2, 2.2, 1.6])
     with c1:
-        with st.popover("🧭 Navigation"):
-            st.caption("Jump to page")
-            for p in pages:
-                if st.button(page_label(p), key=f"top_nav_{p}", use_container_width=True):
-                    st.session_state.page = p
-                    st.rerun()
-    with c2:
         st.markdown(f"<div class='top-nav-current'>Current Page: <b>{page_label(current)}</b></div>", unsafe_allow_html=True)
+    with c2:
+        selected_label = st.selectbox("Quick Jump", labels, index=current_index)
+        selected_page = pages[labels.index(selected_label)]
+        if selected_page != current:
+            st.session_state.page = selected_page
+            st.rerun()
     with c3:
         p1, p2 = st.columns(2)
         with p1:
