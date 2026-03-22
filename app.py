@@ -12,6 +12,7 @@ from uuid import uuid4
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+import streamlit.components.v1 as components
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
@@ -1436,8 +1437,7 @@ def render_top_navigation(pages):
     if not pages:
         return
     current_index = pages.index(current) if current in pages else 0
-    labels = [page_label(p) for p in pages]
-    c1, c2, c3 = st.columns([1.05, 2.45, 2.5])
+    c1, c2, c3 = st.columns([1.05, 3.0, 1.5])
     with c1:
         with st.popover("🧭 Navigation"):
             st.caption("Jump to page")
@@ -1448,11 +1448,6 @@ def render_top_navigation(pages):
     with c2:
         st.markdown(f"<div class='top-nav-current'>Current Page: <b>{page_label(current)}</b></div>", unsafe_allow_html=True)
     with c3:
-        selected_label = st.selectbox("Quick Jump", labels, index=current_index)
-        selected_page = pages[labels.index(selected_label)]
-        if selected_page != current:
-            st.session_state.page = selected_page
-            st.rerun()
         p1, p2 = st.columns(2)
         with p1:
             if st.button("◀ Prev", use_container_width=True, disabled=current_index == 0, key=f"top_nav_prev_{current_index}"):
@@ -1891,7 +1886,6 @@ def login_view():
     a, b = st.columns([1.2, 1])
     with a:
         st.write("Modules: dashboard, sales, orders, stock in, goods/items, customers, search, support centre, activity logs, PDF receipts.")
-        st.info("Default users: manager/manager123 and sales/sales123")
     with b:
         login_error = ""
         with st.form("login"):
@@ -1955,6 +1949,26 @@ def render_kpi_card(title, value, note="", kind=""):
         </div>
         """,
         unsafe_allow_html=True,
+    )
+
+
+def auto_collapse_sidebar_on_mobile():
+    components.html(
+        """
+        <script>
+        (function() {
+          try {
+            const width = window.innerWidth || 1024;
+            if (width > 860) return;
+            const doc = window.parent.document;
+            const btn = doc.querySelector('button[data-testid="stSidebarCollapseButton"]');
+            if (btn) { btn.click(); }
+          } catch (e) {}
+        })();
+        </script>
+        """,
+        height=0,
+        width=0,
     )
 
 
@@ -4165,6 +4179,7 @@ def main():
             st.session_state.business_id = None
             st.rerun()
 
+    auto_collapse_sidebar_on_mobile()
     render_top_navigation(pages)
     page = st.session_state.page
 
