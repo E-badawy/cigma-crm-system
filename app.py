@@ -2051,11 +2051,11 @@ def page_home(user, pages):
         st.markdown("#### Sales Trend (Last 14 Days)")
         trend = df(
             """
-            SELECT DATE(created_at) day, COALESCE(SUM(total_value),0) value
+            SELECT DATE(created_at) AS day_label, COALESCE(SUM(total_value),0) value
             FROM sales
             WHERE business_id=:biz_id AND created_at>=:trend_start
             GROUP BY DATE(created_at)
-            ORDER BY day
+            ORDER BY day_label
             """,
             {"biz_id": bid, "trend_start": trend_start},
         )
@@ -2179,7 +2179,7 @@ def page_dashboard():
         st.plotly_chart(px.bar(f, x="item", y="qty", color="qty", title="Item Sales Frequency"), use_container_width=True)
     with right:
         t = df(
-            "SELECT DATE(created_at) day, COALESCE(SUM(total_value),0) value FROM sales WHERE business_id=:biz_id GROUP BY DATE(created_at) ORDER BY day",
+            "SELECT DATE(created_at) AS day_label, COALESCE(SUM(total_value),0) value FROM sales WHERE business_id=:biz_id GROUP BY DATE(created_at) ORDER BY day_label",
             {"biz_id": bid},
         )
         if t.empty:
