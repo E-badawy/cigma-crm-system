@@ -2082,7 +2082,7 @@ def page_home(user, pages):
             if trend.empty:
                 st.info("No sales trend available yet.")
             else:
-                fig = px.area(trend, x="day", y="value", title="Daily Sales Value", markers=True)
+                fig = px.area(trend, x="day_label", y="value", title="Daily Sales Value", markers=True)
                 fig.update_layout(margin=dict(l=8, r=8, t=36, b=8))
                 st.plotly_chart(fig, use_container_width=True)
 
@@ -2211,7 +2211,7 @@ def page_dashboard():
             if t.empty:
                 st.info("No sales yet.")
             else:
-                st.plotly_chart(px.line(t, x="day", y="value", markers=True, title="Sales Trend"), use_container_width=True)
+                st.plotly_chart(px.line(t, x="day_label", y="value", markers=True, title="Sales Trend"), use_container_width=True)
 
 
 def page_items():
